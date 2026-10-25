@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Conversor de etiquetas (Filtro Inteligente 10x15)</title>
+  <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+  <!-- Biblioteca para extração e leitura de texto do PDF -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      text-align: center;
+      padding: 40px 20px;
+      background-color: #f4f6f8;
+      color: #333;
+      margin: 0;
+    }
+    .container {
+      max-width: 550px;
+      margin: 0 auto;
+      background: white;
+      padding: 35px;
+      border-radius: 12px;
+      box-shadow: 0 4px 15px rgba(0,0,0,0.08);
+    }
+    h2 { color: #ee4d2d; margin-top: 0; }
+    p { color: #666; font-size: 14px; line-height: 1.5; }
+    .upload-box {
+      border: 2px dashed #dcdfe6;
+      padding: 25px;
+      border-radius: 8px;
+      margin: 20px 0;
+      background: #fafafa;
+    }
+    input[type="file"] { width: 100%; }
+    .btn {
+      background-color: #ee4d2d;
+      color: white;
+      border: none;
+      padding: 14px 28px;
+      font-size: 16px;
+      font-weight: bold;
+      border-radius: 6px;
+      cursor: pointer;
+      width: 100%;
+    }
+    .btn:disabled { background-color: #ccc; cursor: not-allowed; }
+    .download-area {
+      margin-top: 25px;
+      padding-top: 20px;
+      border-top: 1px solid #eee;
+      display: none;
+    }
+    .btn-download {
+      background-color: #27ae60;
+      color: white;
+      text-decoration: none;
+      display: inline-block;
+      padding: 14px 28px;
+      border-radius: 6px;
+      font-weight: bold;
+    }
+    #status { margin-top: 15px; font-weight: 500; }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <h2>Editor de Etiquetas</h2>
+  <p>Edita etiquetas em formato 10x15 cm.</p>
+  
+  <div class="upload-box">
+    <input type="file" id="pdfInput" accept="application/pdf" />
+  </div>
+
+  <button id="processBtn" class="btn" onclick="processPDF()" disabled>Gerar Etiquetas (Sem Em Branco)</button>
+
+  <p id="status"></p>
+
+  <div id="downloadArea" class="download-area">
+    <a id="downloadLink" class="btn-download" href="#" download="">⬇️ Baixar Etiquetas Limpas</a>
+  </div>
+</div>
+
+<script>
+  // Configuração do Worker do PDF.js para leitura dos textos
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+
+  const fileInput = document.getElementById('pdfInput');
+  const processBtn = document.getElementById('processBtn');
+  const status = document.getElementById('status');
+  const downloadArea = document.getElementById('downloadArea');
+  const downloadLink = document.getElementById('downloadLink');
+
+  fileInput.addEventListener('change', () => {
+    processBtn.disabled = !fileInput.files.length;
+    downloadArea.style.display = 'none';
+    status.innerText = '';
+  });
+
+  async function processPDF() {
+    status.innerText = "⏳ Analisando conteúdo e descartando páginas em branco...";
+    processBtn.disabled = true;
+    downloadArea.style.display = 'none';
+
+    try {
+      const file = fileInput.files[0];
+      const arrayBuffer = await file.arrayBuffer();
+      
+      // Carrega o PDF em duas bibliotecas:
+      // pdfjsLib para detectar as posições do texto e PDFLib para montar o PDF final
+      const pdfJsDoc = await pdfjsLib.getDocument({ data: arrayBuffer.slice(0) }).promise;
+      const srcDoc = await PDFLib.PDFDocument.load(arrayBuffer);
+      const newDoc = await PDFLib.PDFDocument.create();
+
+      const targetWidth = 283.46;  // 10 cm em pt
+      const targetHeight = 425.20; // 15 cm em pt
+
+      const pageCount = srcDoc.getPageCount();
+      let etiquetasValidas = 0;
+
+      for (let i = 0; i < pageCount; i++) {
+        const srcPage = srcDoc.getPages()[i];
+        const pdfJsPage = await pdfJsDoc.getPage(i + 1);
+        
+        const { width: pageWidth, height: pageHeight } = srcPage.getSize();
+        const halfWidth = pageWidth / 2;
+        const halfHeight = pageHeight / 2;
+
+        // Pega todos os itens de texto da página com suas coordenadas
+        const textContent = await pdfJsPage.getTextContent();
+        
+        // Mapeamento dos 4 quadrantes
+        const quadrants = [
+          // 1/4: Superior Esquerdo
+          { id: 1, left: 0, bottom: halfHeight, right: halfWidth, top: pageHeight },
+          // 2/4: Superior Direito
+          { id: 2, left: halfWidth, bottom: halfHeight, right: pageWidth, top: pageHeight },
+          // 3/4: Inferior Esquerdo
+          { id: 3, left: 0, bottom: 0, right: halfWidth, top: halfHeight },
+          // 4/4: Inferior Direito
+          { id: 4, left: halfWidth, bottom: 0, right: pageWidth, top: halfHeight }
+        ];
+
+        for (const crop of quadrants) {
+          // Verifica se há texto relevante dentro deste quadrante específico
+          const hasText = textContent.items.some(item => {
+            const [x, y] = [item.transform[4], item.transform[5]];
+            const isInside = x >= crop.left && x <= crop.right && y >= crop.bottom && y <= crop.top;
+            const hasValue = item.str && item.str.trim().length > 0;
+            return isInside && hasValue;
+          });
+
+          // Se tiver texto (ou seja, se houver uma etiqueta presente), extrai e adiciona
+          if (hasText) {
+            etiquetasValidas++;
+            const embeddedQuadrant = await newDoc.embedPage(srcPage, crop);
+            const newPage = newDoc.addPage([targetWidth, targetHeight]);
+            newPage.drawPage(embeddedQuadrant, {
+              x: 0,
+              y: 0,
+              width: targetWidth,
+              height: targetHeight
+            });
+          }
+        }
+      }
+
+      if (etiquetasValidas === 0) {
+        status.innerText = "⚠️ Nenhuma etiqueta foi encontrada no arquivo.";
+        return;
+      }
+
+      const pdfBytes = await newDoc.save();
+      const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+      const blobUrl = URL.createObjectURL(blob);
+      const fileName = `etiquetas_shopee_sem_brancos.pdf`;
+
+      downloadLink.href = blobUrl;
+      downloadLink.download = fileName;
+      downloadArea.style.display = 'block';
+
+      status.innerText = `✅ Sucesso! ${etiquetasValidas} etiqueta(s) encontrada(s) e extraída(s).`;
+    } catch (err) {
+      console.error(err);
+      status.innerText = "❌ Erro ao processar o arquivo PDF.";
+    } finally {
+      processBtn.disabled = false;
+    }
+  }
+</script>
+
+</body>
+</html>
